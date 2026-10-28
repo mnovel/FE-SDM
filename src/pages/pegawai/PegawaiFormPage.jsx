@@ -8,6 +8,18 @@ import { regionService } from '../../services/masterdata/regionService';
 import Toast from '../../components/ui/Toast';
 import PageHeader from '../../components/ui/PageHeader';
 
+// HELPER: Caching API ke localStorage agar tidak fetch ulang terus-menerus
+const fetchWithCache = async (cacheKey, fetchFn) => {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) return JSON.parse(cached);
+    
+    const res = await fetchFn();
+    if (res && res.success) {
+        localStorage.setItem(cacheKey, JSON.stringify(res));
+    }
+    return res;
+};
+
 export default function PegawaiFormPage() {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -18,104 +30,121 @@ export default function PegawaiFormPage() {
     const [toast, setToast] = useState(null);
     const [errors, setErrors] = useState({});
 
-    // Master Data untuk Dropdown
+    // Master Data
     const [options, setOptions] = useState({ agamas: [], pendidikans: [], statusPernikahans: [] });
 
-    // State Wilayah (Cascading)
+    // Wilayah KTP
     const [provinces, setProvinces] = useState([]);
     const [cities, setCities] = useState([]);
     const [districts, setDistricts] = useState([]);
     const [villages, setVillages] = useState([]);
 
-    // State Form Data
+    // Wilayah Domisili
+    const [domisiliCities, setDomisiliCities] = useState([]);
+    const [domisiliDistricts, setDomisiliDistricts] = useState([]);
+    const [domisiliVillages, setDomisiliVillages] = useState([]);
+
     const [formData, setFormData] = useState({
         nip: '', nama: '', gelar_depan: '', gelar_belakang: '',
         jenis_identitas: 'KTP', no_identitas: '',
         jenis_kelamin: 'Laki-Laki', tempat_lahir: '', tanggal_lahir: '',
         email: '', no_hp: '', no_hp_darurat: '',
         agama_id: '', pendidikan_id: '', status_pernikahan_id: '',
-
-        // Alamat KTP
         alamat: '', kode_pos: '',
         provinsi_id: '', kota_id: '', kecamatan_id: '', kelurahan_id: '',
-
-        // Alamat Domisili (Read Only)
         alamat_domisili: '', kode_pos_domisili: '',
         provinsi_domisili_id: '', kota_domisili_id: '', kecamatan_domisili_id: '', kelurahan_domisili_id: '',
     });
 
     const [foto, setFoto] = useState(null);
     const [fotoPreview, setFotoPreview] = useState(null);
-
     const showToast = (message, type = 'error') => setToast({ message, type });
 
-    // Fetch Master Data & Data Edit
     useEffect(() => {
-        const fetchInitialData = async () => {
+        const initData = async () => {
             try {
-                // 1. Fetch Master Agama, Pendidikan, Status
-                const [agamaRes, pendidikanRes, statusRes, provRes] = await Promise.all([
-                    masterAgamaService.getAll({ per_page: 100 }),
-                    masterPendidikanService.getAll({ per_page: 100 }),
-                    masterStatusPernikahanService.getAll({ per_page: 100 }),
-                    regionService.getProvinsi({ per_page: 100 })
-                ]);
+                // 1. Fetch Master Data dengan CACHE (Jauh lebih cepat di load kedua)
+                const requests = [
+                    fetchWithCache('master_agama', () => masterAgamaService.getAll({ per_page: 100 })),
+                    fetchWithCache('master_pendidikan', () => masterPendidikanService.getAll({ per_page: 100 })),
+                    fetchWithCache('master_status_nikah', () => masterStatusPernikahanService.getAll({ per_page: 100 })),
+                    fetchWithCache('master_provinsi', () => regionService.getProvinsi({ per_page: 100 })),
+                ];
+
+                if (isEditMode) requests.push(pegawaiService.getById(id));
+
+                const [agamaRes, pendidikanRes, statusRes, provRes, pegawaiRes] = await Promise.all(requests);
 
                 setOptions({
-                    agamas: agamaRes.data || [],
-                    pendidikans: pendidikanRes.data || [],
-                    statusPernikahans: statusRes.data || [],
+                    agamas: agamaRes?.data || [],
+                    pendidikans: pendidikanRes?.data || [],
+                    statusPernikahans: statusRes?.data || [],
                 });
-                setProvinces(provRes.data || []);
+                setProvinces(provRes?.data || []);
 
-                // 2. Jika Edit, ambil data pegawai
-                if (isEditMode) {
-                    const res = await pegawaiService.getById(id);
-                    if (res.success && res.data) {
-                        const p = res.data;
-                        const tglLahir = p.tanggal_lahir ? p.tanggal_lahir.split('T')[0] : '';
+                if (isEditMode && pegawaiRes?.success) {
+                    const p = pegawaiRes.data;
+                    const tglLahir = p.tanggal_lahir ? p.tanggal_lahir.split('T')[0] : '';
 
-                        setFormData({
-                            nip: p.nip || '', nama: p.nama || '',
-                            gelar_depan: p.gelar_depan || '', gelar_belakang: p.gelar_belakang || '',
-                            jenis_identitas: p.jenis_identitas || 'KTP', no_identitas: p.no_identitas || '',
-                            jenis_kelamin: p.jenis_kelamin || 'Laki-Laki',
-                            tempat_lahir: p.tempat_lahir || '', tanggal_lahir: tglLahir,
-                            email: p.email || '', no_hp: p.no_hp || '', no_hp_darurat: p.no_hp_darurat || '',
+                    setFormData({
+                        nip: p.nip || '', nama: p.nama || '',
+                        gelar_depan: p.gelar_depan || '', gelar_belakang: p.gelar_belakang || '',
+                        jenis_identitas: p.jenis_identitas || 'KTP', no_identitas: p.no_identitas || '',
+                        jenis_kelamin: p.jenis_kelamin || 'Laki-Laki',
+                        tempat_lahir: p.tempat_lahir || '', tanggal_lahir: tglLahir,
+                        email: p.email || '', no_hp: p.no_hp || '', no_hp_darurat: p.no_hp_darurat || '',
+                        agama_id: p.master_agama_id || '', pendidikan_id: p.master_pendidikan_id || '',
+                        status_pernikahan_id: p.master_status_pernikahan_id || '',
+                        alamat: p.alamat || '', kode_pos: p.kode_pos || '',
+                        provinsi_id: p.master_provinsi_id || '', kota_id: p.master_kota_id || '',
+                        kecamatan_id: p.master_kecamatan_id || '', kelurahan_id: p.master_kelurahan_id || '',
+                        alamat_domisili: p.alamat_domisili || '', kode_pos_domisili: p.kode_pos_domisili || '',
+                        provinsi_domisili_id: p.master_provinsi_domisili_id || '',
+                        kota_domisili_id: p.master_kota_domisili_id || '',
+                        kecamatan_domisili_id: p.master_kecamatan_domisili_id || '',
+                        kelurahan_domisili_id: p.master_kelurahan_domisili_id || '',
+                    });
 
-                            agama_id: p.master_agama_id || '',
-                            pendidikan_id: p.master_pendidikan_id || '',
-                            status_pernikahan_id: p.master_status_pernikahan_id || '',
+                    if (p.foto) setFotoPreview(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/storage/${p.foto}`);
 
-                            alamat: p.alamat || '', kode_pos: p.kode_pos || '',
-                            provinsi_id: p.master_provinsi_id || '',
-                            kota_id: p.master_kota_id || '',
-                            kecamatan_id: p.master_kecamatan_id || '',
-                            kelurahan_id: p.master_kelurahan_id || '',
+                    // DEDUPLIKASI: Cek apakah KTP dan Domisili punya kode wilayah yang sama
+                    const isProvSame = p.provinsi?.code && p.provinsi?.code === p.provinsi_domisili?.code;
+                    const isKotaSame = p.kota?.code && p.kota?.code === p.kota_domisili?.code;
+                    const isKecSame = p.kecamatan?.code && p.kecamatan?.code === p.kecamatan_domisili?.code;
 
-                            alamat_domisili: p.alamat_domisili || '', kode_pos_domisili: p.kode_pos_domisili || '',
-                            provinsi_domisili_id: p.master_provinsi_domisili_id || '',
-                            kota_domisili_id: p.master_kota_domisili_id || '',
-                            kecamatan_domisili_id: p.master_kecamatan_domisili_id || '',
-                            kelurahan_domisili_id: p.master_kelurahan_domisili_id || '',
-                        });
+                    const regionRequests = [];
+                    const reqKeys = [];
 
-                        if (p.foto) setFotoPreview(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/storage/${p.foto}`);
+                    // KTP
+                    if (p.provinsi?.code) { reqKeys.push('cities'); regionRequests.push(fetchWithCache(`cities_${p.provinsi.code}`, () => regionService.getKota({ province_code: p.provinsi.code, per_page: 100 }))); }
+                    if (p.kota?.code) { reqKeys.push('districts'); regionRequests.push(fetchWithCache(`districts_${p.kota.code}`, () => regionService.getKecamatan({ city_code: p.kota.code, per_page: 100 }))); }
+                    if (p.kecamatan?.code) { reqKeys.push('villages'); regionRequests.push(fetchWithCache(`villages_${p.kecamatan.code}`, () => regionService.getKelurahan({ district_code: p.kecamatan.code, per_page: 100 }))); }
 
-                        // 3. Fetch Cascading Wilayah untuk KTP (jika ada)
-                        if (p.provinsi?.code) {
-                            const cRes = await regionService.getKota({ province_code: p.provinsi.code, per_page: 100 });
-                            if (cRes.success) setCities(cRes.data);
+                    // Domisili (Hanya fetch jika beda dengan KTP)
+                    if (p.provinsi_domisili?.code && !isProvSame) { reqKeys.push('domCities'); regionRequests.push(fetchWithCache(`cities_${p.provinsi_domisili.code}`, () => regionService.getKota({ province_code: p.provinsi_domisili.code, per_page: 100 }))); }
+                    if (p.kota_domisili?.code && !isKotaSame) { reqKeys.push('domDistricts'); regionRequests.push(fetchWithCache(`districts_${p.kota_domisili.code}`, () => regionService.getKecamatan({ city_code: p.kota_domisili.code, per_page: 100 }))); }
+                    if (p.kecamatan_domisili?.code && !isKecSame) { reqKeys.push('domVillages'); regionRequests.push(fetchWithCache(`villages_${p.kecamatan_domisili.code}`, () => regionService.getKelurahan({ district_code: p.kecamatan_domisili.code, per_page: 100 }))); }
+
+                    const regionResults = await Promise.all(regionRequests);
+                    
+                    let ktpCities = [], ktpDistricts = [], ktpVillages = [];
+
+                    regionResults.forEach((res, index) => {
+                        if (res.success) {
+                            const key = reqKeys[index];
+                            if (key === 'cities') { setCities(res.data); ktpCities = res.data; }
+                            if (key === 'districts') { setDistricts(res.data); ktpDistricts = res.data; }
+                            if (key === 'villages') { setVillages(res.data); ktpVillages = res.data; }
+                            if (key === 'domCities') setDomisiliCities(res.data);
+                            if (key === 'domDistricts') setDomisiliDistricts(res.data);
+                            if (key === 'domVillages') setDomisiliVillages(res.data);
                         }
-                        if (p.kota?.code) {
-                            const dRes = await regionService.getKecamatan({ city_code: p.kota.code, per_page: 100 });
-                            if (dRes.success) setDistricts(dRes.data);
-                        }
-                        if (p.kecamatan?.code) {
-                            const vRes = await regionService.getKelurahan({ district_code: p.kecamatan.code, per_page: 100 });
-                            if (vRes.success) setVillages(vRes.data);
-                        }
-                    }
+                    });
+
+                    // Jika Domisili sama dengan KTP, salin datanya agar tidak fetch ulang
+                    if (isProvSame) setDomisiliCities(ktpCities);
+                    if (isKotaSame) setDomisiliDistricts(ktpDistricts);
+                    if (isKecSame) setDomisiliVillages(ktpVillages);
                 }
             } catch (error) {
                 console.error("Gagal load data awal:", error);
@@ -125,7 +154,7 @@ export default function PegawaiFormPage() {
             }
         };
 
-        fetchInitialData();
+        initData();
     }, [id, isEditMode]);
 
     const handleChange = (e) => {
@@ -141,18 +170,15 @@ export default function PegawaiFormPage() {
         }
     };
 
-    // --- HANDLER CASCADING WILAYAH KTP ---
+    // --- HANDLER WILAYAH KTP ---
     const handleProvinsiChange = async (e) => {
         const provId = e.target.value;
         setFormData(prev => ({ ...prev, provinsi_id: provId, kota_id: '', kecamatan_id: '', kelurahan_id: '' }));
-
-        if (!provId) {
-            setCities([]); setDistricts([]); setVillages([]);
-            return;
-        }
+        if (!provId) { setCities([]); setDistricts([]); setVillages([]); return; }
+        
         const prov = provinces.find(p => p.id === Number(provId));
         if (prov) {
-            const res = await regionService.getKota({ province_code: prov.code, per_page: 100 });
+            const res = await fetchWithCache(`cities_${prov.code}`, () => regionService.getKota({ province_code: prov.code, per_page: 100 }));
             if (res.success) setCities(res.data);
         }
     };
@@ -160,14 +186,11 @@ export default function PegawaiFormPage() {
     const handleKotaChange = async (e) => {
         const kotaId = e.target.value;
         setFormData(prev => ({ ...prev, kota_id: kotaId, kecamatan_id: '', kelurahan_id: '' }));
+        if (!kotaId) { setDistricts([]); setVillages([]); return; }
 
-        if (!kotaId) {
-            setDistricts([]); setVillages([]);
-            return;
-        }
         const kota = cities.find(k => k.id === Number(kotaId));
         if (kota) {
-            const res = await regionService.getKecamatan({ city_code: kota.code, per_page: 100 });
+            const res = await fetchWithCache(`districts_${kota.code}`, () => regionService.getKecamatan({ city_code: kota.code, per_page: 100 }));
             if (res.success) setDistricts(res.data);
         }
     };
@@ -175,19 +198,53 @@ export default function PegawaiFormPage() {
     const handleKecamatanChange = async (e) => {
         const kecId = e.target.value;
         setFormData(prev => ({ ...prev, kecamatan_id: kecId, kelurahan_id: '' }));
+        if (!kecId) { setVillages([]); return; }
 
-        if (!kecId) {
-            setVillages([]);
-            return;
-        }
         const kec = districts.find(k => k.id === Number(kecId));
         if (kec) {
-            const res = await regionService.getKelurahan({ district_code: kec.code, per_page: 100 });
+            const res = await fetchWithCache(`villages_${kec.code}`, () => regionService.getKelurahan({ district_code: kec.code, per_page: 100 }));
             if (res.success) setVillages(res.data);
         }
     };
 
-    // Fitur "Sama dengan KTP" (Menyalin data KTP ke Domisili)
+    // --- HANDLER WILAYAH DOMISILI ---
+    const handleProvinsiDomisiliChange = async (e) => {
+        const provId = e.target.value;
+        setFormData(prev => ({ ...prev, provinsi_domisili_id: provId, kota_domisili_id: '', kecamatan_domisili_id: '', kelurahan_domisili_id: '' }));
+        if (!provId) { setDomisiliCities([]); setDomisiliDistricts([]); setDomisiliVillages([]); return; }
+
+        const prov = provinces.find(p => p.id === Number(provId));
+        if (prov) {
+            const res = await fetchWithCache(`cities_${prov.code}`, () => regionService.getKota({ province_code: prov.code, per_page: 100 }));
+            if (res.success) setDomisiliCities(res.data);
+        }
+    };
+
+    const handleKotaDomisiliChange = async (e) => {
+        const kotaId = e.target.value;
+        setFormData(prev => ({ ...prev, kota_domisili_id: kotaId, kecamatan_domisili_id: '', kelurahan_domisili_id: '' }));
+        if (!kotaId) { setDomisiliDistricts([]); setDomisiliVillages([]); return; }
+
+        const kota = domisiliCities.find(k => k.id === Number(kotaId));
+        if (kota) {
+            const res = await fetchWithCache(`districts_${kota.code}`, () => regionService.getKecamatan({ city_code: kota.code, per_page: 100 }));
+            if (res.success) setDomisiliDistricts(res.data);
+        }
+    };
+
+    const handleKecamatanDomisiliChange = async (e) => {
+        const kecId = e.target.value;
+        setFormData(prev => ({ ...prev, kecamatan_domisili_id: kecId, kelurahan_domisili_id: '' }));
+        if (!kecId) { setDomisiliVillages([]); return; }
+
+        const kec = domisiliDistricts.find(k => k.id === Number(kecId));
+        if (kec) {
+            const res = await fetchWithCache(`villages_${kec.code}`, () => regionService.getKelurahan({ district_code: kec.code, per_page: 100 }));
+            if (res.success) setDomisiliVillages(res.data);
+        }
+    };
+
+    // OPTIMASI: Salin KTP ke Domisili TANPA API CALL
     const copyKtpToDomisili = () => {
         setFormData(prev => ({
             ...prev,
@@ -198,6 +255,12 @@ export default function PegawaiFormPage() {
             kecamatan_domisili_id: prev.kecamatan_id,
             kelurahan_domisili_id: prev.kelurahan_id,
         }));
+
+        // Cukup salin state dropdown yang sudah ada di memori (0 ms)
+        setDomisiliCities(cities);
+        setDomisiliDistricts(districts);
+        setDomisiliVillages(villages);
+
         showToast('Alamat KTP berhasil disalin ke Domisili', 'success');
     };
 
@@ -325,7 +388,6 @@ export default function PegawaiFormPage() {
                             </select>
                         </div>
 
-                        {/* Upload Foto */}
                         <div className="md:col-span-2 lg:col-span-3 flex items-center gap-6 pt-2">
                             <div className="w-24 h-24 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center overflow-hidden shrink-0">
                                 {fotoPreview ? <img src={fotoPreview} alt="Preview" className="w-full h-full object-cover" /> : <svg className="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>}
@@ -357,7 +419,7 @@ export default function PegawaiFormPage() {
                     </div>
                 </div>
 
-                {/* SECTION 3: ALAMAT KTP (DROPDOWN WILAYAH) */}
+                {/* SECTION 3: ALAMAT KTP */}
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
                     <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-3">3. Alamat Sesuai KTP</h3>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
@@ -403,7 +465,7 @@ export default function PegawaiFormPage() {
                     </div>
                 </div>
 
-                {/* SECTION 4: ALAMAT DOMISILI (READ ONLY) */}
+                {/* SECTION 4: ALAMAT DOMISILI */}
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
                     <div className="flex items-center justify-between mb-4 border-b border-slate-100 pb-3">
                         <h3 className="text-lg font-bold text-slate-800">4. Alamat Domisili</h3>
@@ -412,33 +474,44 @@ export default function PegawaiFormPage() {
                         </button>
                     </div>
 
-                    {/* Tampilan Read-Only untuk Domisili */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-5 opacity-80 pointer-events-none">
-                        <div className="md:col-span-2">
-                            <label className="block text-sm font-medium text-slate-500 mb-1.5">Alamat Lengkap (Jalan/Dusun)</label>
-                            <input type="text" name="alamat_domisili" value={formData.alamat_domisili} readOnly className="w-full px-4 py-2 bg-slate-100 border border-slate-200 rounded-xl text-sm cursor-not-allowed" placeholder="-" />
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
+                        <div className="md:col-span-3">
+                            <label className="block text-sm font-medium text-slate-700 mb-1.5">Alamat Lengkap (Jalan/Dusun)</label>
+                            <input type="text" name="alamat_domisili" value={formData.alamat_domisili} onChange={handleChange} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 text-sm" placeholder="Kosongkan jika sama dengan KTP" />
                         </div>
                         <div>
-                            <label className="block text-sm font-medium text-slate-500 mb-1.5">Kode Pos</label>
-                            <input type="text" name="kode_pos_domisili" value={formData.kode_pos_domisili} readOnly className="w-full px-4 py-2 bg-slate-100 border border-slate-200 rounded-xl text-sm cursor-not-allowed" placeholder="-" />
+                            <label className="block text-sm font-medium text-slate-700 mb-1.5">Kode Pos</label>
+                            <input type="text" name="kode_pos_domisili" value={formData.kode_pos_domisili} onChange={handleChange} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 text-sm" placeholder="Kode Pos" />
                         </div>
 
-                        <div className="md:col-span-3 grid grid-cols-1 md:grid-cols-4 gap-4 bg-slate-100 p-4 rounded-xl border border-slate-200">
+                        <div className="md:col-span-4 grid grid-cols-1 md:grid-cols-4 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
                             <div>
-                                <label className="block text-xs font-medium text-slate-500 mb-1">Provinsi ID</label>
-                                <input type="text" value={formData.provinsi_domisili_id} readOnly className="w-full px-3 py-1.5 text-sm bg-transparent border-b border-slate-300 text-slate-600 outline-none" placeholder="-" />
+                                <label className="block text-xs font-semibold text-slate-600 mb-1">Provinsi</label>
+                                <select name="provinsi_domisili_id" value={formData.provinsi_domisili_id} onChange={handleProvinsiDomisiliChange} className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg outline-none">
+                                    <option value="">-- Pilih Provinsi --</option>
+                                    {provinces.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                </select>
                             </div>
                             <div>
-                                <label className="block text-xs font-medium text-slate-500 mb-1">Kota ID</label>
-                                <input type="text" value={formData.kota_domisili_id} readOnly className="w-full px-3 py-1.5 text-sm bg-transparent border-b border-slate-300 text-slate-600 outline-none" placeholder="-" />
+                                <label className="block text-xs font-semibold text-slate-600 mb-1">Kota/Kabupaten</label>
+                                <select name="kota_domisili_id" value={formData.kota_domisili_id} onChange={handleKotaDomisiliChange} disabled={!formData.provinsi_domisili_id} className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg outline-none disabled:opacity-50">
+                                    <option value="">-- Pilih Kota --</option>
+                                    {domisiliCities.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
+                                </select>
                             </div>
                             <div>
-                                <label className="block text-xs font-medium text-slate-500 mb-1">Kecamatan ID</label>
-                                <input type="text" value={formData.kecamatan_domisili_id} readOnly className="w-full px-3 py-1.5 text-sm bg-transparent border-b border-slate-300 text-slate-600 outline-none" placeholder="-" />
+                                <label className="block text-xs font-semibold text-slate-600 mb-1">Kecamatan</label>
+                                <select name="kecamatan_domisili_id" value={formData.kecamatan_domisili_id} onChange={handleKecamatanDomisiliChange} disabled={!formData.kota_domisili_id} className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg outline-none disabled:opacity-50">
+                                    <option value="">-- Pilih Kecamatan --</option>
+                                    {domisiliDistricts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                                </select>
                             </div>
                             <div>
-                                <label className="block text-xs font-medium text-slate-500 mb-1">Kelurahan ID</label>
-                                <input type="text" value={formData.kelurahan_domisili_id} readOnly className="w-full px-3 py-1.5 text-sm bg-transparent border-b border-slate-300 text-slate-600 outline-none" placeholder="-" />
+                                <label className="block text-xs font-semibold text-slate-600 mb-1">Kelurahan/Desa</label>
+                                <select name="kelurahan_domisili_id" value={formData.kelurahan_domisili_id} onChange={handleChange} disabled={!formData.kecamatan_domisili_id} className="w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg outline-none disabled:opacity-50">
+                                    <option value="">-- Pilih Kelurahan --</option>
+                                    {domisiliVillages.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                                </select>
                             </div>
                         </div>
                     </div>
